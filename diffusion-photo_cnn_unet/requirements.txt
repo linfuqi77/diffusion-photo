@@ -1,0 +1,7 @@
+torch
+streamlit
+numpy<2
+matplotlib
+Pillow
+pytest
+torchvision
