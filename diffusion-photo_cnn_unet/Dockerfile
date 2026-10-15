@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
     torch==2.2.2+cpu torchvision==0.17.2+cpu \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py train.py model.pt cnn_model.pt ./
+COPY app.py train.py linear_baseline.npz model.pt cnn_model.pt ./
 
 EXPOSE 8501
 

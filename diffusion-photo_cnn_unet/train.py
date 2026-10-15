@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -83,14 +84,69 @@ def reconstruct(z_t, predicted_noise, alpha_t):
     x_recon = (z_t - torch.sqrt(1 - alpha_t_tensor) * predicted_noise) / torch.sqrt(alpha_t_tensor)
     return torch.clamp(x_recon, 0, 1)  # 将像素值限制在有效范围内。
 
+
+def _linear_regression_features(z_t, alpha_t):
+    if z_t.ndim != 4 or z_t.shape[1] != 3:
+        raise ValueError("Linear regression expects an RGB tensor with shape [batch, 3, height, width].")
+
+    batch_size, _, height, width = z_t.shape
+    pixels = z_t.permute(0, 2, 3, 1).reshape(-1, 3)
+    alpha = torch.full(
+        (batch_size * height * width, 1),
+        float(alpha_t),
+        dtype=z_t.dtype,
+        device=z_t.device,
+    )
+    intercept = torch.ones_like(alpha)
+    return torch.cat((intercept, pixels, alpha), dim=1)
+
+
+def fit_linear_noise_regression(x, num_samples=64):
+    """Fit a linear RGB-to-noise regressor using synthetic noise on training images."""
+    if x.ndim != 4 or x.shape[1] != 3:
+        raise ValueError("Training images must have shape [batch, 3, height, width].")
+    if num_samples < 2:
+        raise ValueError("At least two synthetic noise samples are required.")
+
+    training_image = x.detach().cpu().float()
+    feature_samples = []
+    noise_samples = []
+    for _ in range(num_samples):
+        alpha_t = torch.rand(1).item() * 0.9 + 0.05
+        noisy_image, true_noise = add_noise(training_image, alpha_t)
+        feature_samples.append(_linear_regression_features(noisy_image, alpha_t).numpy())
+        noise_samples.append(true_noise.permute(0, 2, 3, 1).reshape(-1, 3).numpy())
+
+    features = np.concatenate(feature_samples, axis=0).astype(np.float64, copy=False)
+    targets = np.concatenate(noise_samples, axis=0).astype(np.float64, copy=False)
+    coefficients, _, _, _ = np.linalg.lstsq(features, targets, rcond=None)
+    return coefficients.astype(np.float32)
+
+
+def predict_linear_noise(z_t, alpha_t, coefficients):
+    """Predict RGB noise with a fitted linear regression model."""
+    coefficients_tensor = torch.as_tensor(
+        coefficients,
+        dtype=z_t.dtype,
+        device=z_t.device,
+    )
+    if coefficients_tensor.shape != (5, 3):
+        raise ValueError("Linear regression coefficients must have shape [5, 3].")
+
+    features = _linear_regression_features(z_t, alpha_t)
+    predicted_pixels = features @ coefficients_tensor
+    batch_size, _, height, width = z_t.shape
+    return predicted_pixels.reshape(batch_size, height, width, 3).permute(0, 3, 1, 2)
+
+
 # 3. 训练执行逻辑
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train CNN and/or U-Net denoising models.")
     parser.add_argument(
         "--model",
-        choices=("cnn", "unet", "all"),
+        choices=("baseline", "cnn", "unet", "all"),
         default="all",
-        help="Select which model to train (default: all).",
+        help="Select which model to train (default: all). The linear baseline is always fitted.",
     )
     args = parser.parse_args()
 
@@ -108,6 +164,11 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x = x.to(device)
+
+    baseline_coefficients = fit_linear_noise_regression(x)
+    np.savez("linear_baseline.npz", coefficients=baseline_coefficients)
+    print("Linear regression baseline fitted and saved as linear_baseline.npz")
+
     criterion = nn.MSELoss()
     epochs = 500
 
@@ -115,7 +176,7 @@ if __name__ == "__main__":
         "cnn": (CNNDenoise, "cnn_model.pt", "CNN"),
         "unet": (UNetDenoise, "model.pt", "U-Net"),
     }
-    selected_models = (
+    selected_models = () if args.model == "baseline" else (
         model_options.values() if args.model == "all" else (model_options[args.model],)
     )
     for model_class, model_path, model_name in selected_models:

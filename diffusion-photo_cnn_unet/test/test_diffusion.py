@@ -5,7 +5,14 @@ import os
 
 # 将项目根目录加入路径，以便导入 train.py。
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from train import CNNDenoise, UNetDenoise, add_noise, reconstruct
+from train import (
+    CNNDenoise,
+    UNetDenoise,
+    add_noise,
+    fit_linear_noise_regression,
+    predict_linear_noise,
+    reconstruct,
+)
 
 @pytest.fixture
 def sample_image_tensor():
@@ -30,6 +37,15 @@ def test_cnn_output_shape(sample_image_tensor):
     model = CNNDenoise()
     output = model(sample_image_tensor)
     assert output.shape == (1, 3, 64, 64), "CNN output shape should match the input shape."
+
+def test_linear_regression_output_shape(sample_image_tensor):
+    """测试线性回归基线可以拟合并预测与输入相同形状的噪声。"""
+    coefficients = fit_linear_noise_regression(sample_image_tensor, num_samples=2)
+    assert coefficients.shape == (5, 3)
+    noisy_image, _ = add_noise(sample_image_tensor, 0.5)
+    predicted_noise = predict_linear_noise(noisy_image, 0.5, coefficients)
+    assert predicted_noise.shape == sample_image_tensor.shape
+    assert torch.isfinite(predicted_noise).all()
 
 def test_reconstruct_valid_values(sample_image_tensor):
     """测试重建结果是否为有限值，且数值范围在 [0, 1] 之间。"""
